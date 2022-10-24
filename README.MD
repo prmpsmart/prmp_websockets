@@ -4,7 +4,7 @@ A websockets library that is very easy to handle, with little to no hacks.
 
 ## Tests
 
-. [tests/server.py](tests/server.py)
+- [tests/server.py](tests/server.py)
 ``` python
 
 from prmp_websockets import PRMP_WebSocketServer, PRMP_WebSocketHandler
@@ -52,7 +52,7 @@ server.serve_forever(threaded_serving=True)
 
 ```
 
-. [tests/client.py](tests/client.py)
+- [tests/client.py](tests/client.py)
 ``` python
 from prmp_websockets import PRMP_WebSocketClient
 
