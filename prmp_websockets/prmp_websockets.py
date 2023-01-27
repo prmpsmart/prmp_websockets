@@ -18,12 +18,13 @@ __all__ = (
     "PRMP_WebSocketServer",
     "PRMP_WebSocketHandler",
     "PRMP_WebSocketClient",
+    "LOGGER",
+    "TIME",
+    "TIME2STRING",
+    "logging",
 )
 
-import hmac, threading, hashlib, struct, socketserver, base64, os, logging, ssl, codecs, typing, socket, errno
-import selectors
-import time
-import inspect
+import hmac, threading, hashlib, struct, socketserver, base64, os, logging, ssl, codecs, typing, socket, errno, datetime, time
 from urllib.parse import urlparse
 from http import client as HTTPStatus
 import http.cookies
@@ -138,6 +139,15 @@ LOGGER = logging.getLogger(__name__)
 logging.basicConfig()
 
 VERSION = 13
+
+
+def TIME():
+    return int(time.time())
+
+
+def TIME2STRING(time: int = 0):
+    time = time or TIME()
+    return datetime.datetime.fromtimestamp(time).strftime("%d/%m/%Y ... %H:%M %p")
 
 
 class PRMP_WebsocketProtocol:
@@ -447,24 +457,29 @@ class PRMP_WebsocketProtocol:
             else:
                 self.index += 1
 
-    def recv(self, read: int = 1024):
+    def falsify_variables(self):
+        self.socket = None
+        self.keep_alive = False
+        self.connected = False
+
+    def try_except(self, func: str, arg):
         try:
-            return self.socket.recv(read)
-        except Exception:
+            return getattr(self.socket, func)(arg)
+
+        except Exception as e:
+            LOGGER.debug(e)
             if self.socket:
                 self.socket.close()
-            self.socket = None
-            self.connected = False
-            self.keep_alive = False
-            raise
+            self.falsify_variables()
 
-    def send(self, data: bytes):
-        try:
-            return self.socket.send(data)
-        except:
-            self.keep_alive = False
+    def recv(self, read: int = 1024):
+        if recv := self.try_except("recv", read):
+            return recv
 
-    def send_payload(self, fin: bool, message: bytes, opcode=OPCODE_TEXT):
+    def send(self, data: bytes) -> int:
+        return self.try_except("send", data)
+
+    def send_payload(self, fin: bool, message: bytes, opcode=OPCODE_TEXT) -> int:
         b1 = 0
         b2 = 0
         if fin is False:
@@ -498,7 +513,7 @@ class PRMP_WebsocketProtocol:
 
         return self.send(payload + message)
 
-    def send_message(self, message: DATA, fragment: bool = False):
+    def send_message(self, message: DATA, fragment: bool = False) -> int:
         """
         Send websocket data frame to the client.
 
@@ -530,7 +545,7 @@ class PRMP_WebsocketProtocol:
         """
         self.send_payload(True, data, opcode=OPCODE_STREAM)
 
-    def send_fragment_end(self, data):
+    def send_fragment_end(self, data) -> int:
         """
         see send_fragment_end()
 
@@ -572,7 +587,7 @@ class PRMP_WebsocketProtocol:
                 data = self.recv(16384)
                 if not data:
                     raise Exception("remote socket closed")
-                
+
                 for d in data:
                     self._parseMessage(d)
 
@@ -607,7 +622,7 @@ class PRMP_WebSocketHandler(PRMP_WebsocketProtocol, socketserver.StreamRequestHa
                 )
             except:  # Not sure which exception it throws if the key/cert isn't found
                 LOGGER.warning(
-                    "SSL not available (are the paths {} and {} correct for the key and cert?)".format(
+                    " SSL not available (are the paths {} and {} correct for the key and cert?)".format(
                         server.key, server.cert
                     )
                 )
@@ -617,7 +632,7 @@ class PRMP_WebSocketHandler(PRMP_WebsocketProtocol, socketserver.StreamRequestHa
         socketserver.StreamRequestHandler.__init__(self, socket, addr, server)
 
         self.server: PRMP_WebSocketServer
-        
+
     def setup(self):
         self.socket = self.request
         super().setup()
@@ -636,7 +651,7 @@ class PRMP_WebSocketHandler(PRMP_WebsocketProtocol, socketserver.StreamRequestHa
                 head, value = header.split(":", 1)
                 headers[head.lower().strip()] = value.strip()
         except Exception as e:
-            print("Header read error", e)
+            LOGGER.debug(" Header read error", e)
 
         return headers
 
@@ -651,7 +666,7 @@ class PRMP_WebSocketHandler(PRMP_WebsocketProtocol, socketserver.StreamRequestHa
         try:
             key = headers["sec-websocket-key"]
         except KeyError:
-            LOGGER.warning("Client tried to connect but was missing a key")
+            LOGGER.warning(" Client tried to connect but was missing a key")
             self.keep_alive = False
 
         if not self.keep_alive:
@@ -681,17 +696,17 @@ class PRMP_WebSocketServer(socketserver.ThreadingTCPServer):
 
     allow_reuse_address = True
     request_queue_size = 10
+    Handler = PRMP_WebSocketHandler
 
     def __init__(
         self,
         server_address: tuple[str, int],
-        RequestHandlerClass: "PRMP_WebSocketHandler"=None,
         key: str = "",
         cert: str = "",
         version=ssl.PROTOCOL_TLSv1,
         log_level: int = logging.WARNING,
     ) -> None:
-        super().__init__(server_address, RequestHandlerClass or PRMP_WebSocketHandler)
+        super().__init__(server_address, self.Handler)
 
         LOGGER.setLevel(log_level)
 
@@ -701,34 +716,38 @@ class PRMP_WebSocketServer(socketserver.ThreadingTCPServer):
 
         self.thread: threading.Thread = None
         self.clients: list[PRMP_WebSocketHandler] = []
+        self.clients_map: dict[str, PRMP_WebSocketHandler] = {}
 
         self._deny_clients = False
+        self.started = False
 
     def serve_forever(self, threaded_serving: bool = True):
         cls_name = self.__class__.__name__
         try:
+            self.started = True
             self.on_start()
             if threaded_serving:
                 self.thread = threading.Thread(
                     target=super().serve_forever, daemon=True
                 )
-                LOGGER.info(f"Starting {cls_name} on thread {self.thread.getName()}.")
+                LOGGER.debug(f" Starting {cls_name} on thread {self.thread.getName()}.")
 
                 self.thread.start()
 
             else:
                 self.thread = threading.current_thread()
-                LOGGER.info(f"Starting {cls_name} on main thread.")
+                LOGGER.debug(f" Starting {cls_name} on main thread.")
 
                 super().serve_forever()
 
         except KeyboardInterrupt:
-            LOGGER.info("Server terminated.")
-            self.server_close()
+            LOGGER.debug(" Server terminated.")
+            self.close()
 
         except Exception as e:
-            LOGGER.error(str(e), exc_info=True)
+            LOGGER.error(" " + str(e), exc_info=True)
             os.sys.exit(1)
+            self.close()
 
     def _deny_new_connections(self, status, reason):
         self._deny_clients = {
@@ -780,10 +799,12 @@ class PRMP_WebSocketServer(socketserver.ThreadingTCPServer):
             client.send_close(status, reason)
         self.close_clients()
 
-    def _shutdown_gracefully(self, status=STATUS_NORMAL, reason=DEFAULT_CLOSE_REASON):
+    def close(self, status=STATUS_NORMAL, reason=DEFAULT_CLOSE_REASON):
         """
         Send a CLOSE handshake to all connected clients before terminating server
         """
+        self.started = False
+        self.on_close()
         if self.clients:
             self._disconnect_clients_gracefully(status, reason)
         self.server_close()
@@ -795,19 +816,22 @@ class PRMP_WebSocketServer(socketserver.ThreadingTCPServer):
         return sock, addr
 
     def on_accept(self, sock, addr):
-        ...
+        LOGGER.info(f" Socket accepted: {addr}")
 
     def on_start(self):
-        ...
+        LOGGER.info(f" Server started at {TIME2STRING()}")
+
+    def on_close(self):
+        LOGGER.info(f" Server closed at {TIME2STRING()}")
 
     def on_new_client(self, client: "PRMP_WebSocketHandler"):
-        ...
+        LOGGER.info(f" Client connected: {client.client_address}")
 
     def on_client_left(
         self,
         client: "PRMP_WebSocketHandler",
     ):
-        ...
+        LOGGER.info(f" Client disconnected: {client.client_address}")
 
 
 class SimpleCookieJar:
@@ -877,8 +901,9 @@ class HandshakeResponse:
 
 
 class PRMP_WebSocketClient(PRMP_WebsocketProtocol):
-    def __init__(self) -> None:
+    def __init__(self, log_level: int = logging.WARNING) -> None:
         super().__init__()
+        LOGGER.setLevel(log_level)
 
         self.handshake_response = None
         self.rfile = None
@@ -956,14 +981,12 @@ class PRMP_WebSocketClient(PRMP_WebsocketProtocol):
         status = None
         status_message = None
         headers = {}
-        # print("--- response header ---")
 
         while True:
             line = self.rfile.readline().decode().strip()
             if not line:
                 break
 
-            # print(line)
             if not status:
 
                 status_info = line.split(" ", 2)
@@ -982,8 +1005,6 @@ class PRMP_WebSocketClient(PRMP_WebsocketProtocol):
                         headers[key.lower()] = value.strip()
                 else:
                     raise Exception("Invalid header")
-
-        # print("-----------------------")
 
         return status, headers, status_message
 
@@ -1082,7 +1103,7 @@ class PRMP_WebSocketClient(PRMP_WebsocketProtocol):
             if not subproto or subproto.lower() not in [
                 s.lower() for s in subprotocols
             ]:
-                print("Invalid subprotocol: " + str(subprotocols))
+                LOGGER.debug(" Invalid subprotocol: " + str(subprotocols))
                 return False, None
             subproto = subproto.lower()
 
@@ -1110,7 +1131,6 @@ class PRMP_WebSocketClient(PRMP_WebsocketProtocol):
 
         header_str = "\r\n".join(headers)
         self.send(header_str.encode())
-        # print("request header", header_str)
 
         status, resp = self._get_resp_headers()
         if status in SUPPORTED_REDIRECT_STATUSES:
@@ -1216,13 +1236,13 @@ class PRMP_WebSocketClient(PRMP_WebsocketProtocol):
             self.valid_client = True
             self.handshaked = True
             self.on_connected()
-            
+
         except Exception as e:
             if self.socket:
                 self.socket.close()
                 self.socket = None
             raise
-        
+
     def abort(self):
         """
         Low-level asynchronous abort, wakes up other threads that are waiting in recv_*
@@ -1250,7 +1270,13 @@ class PRMP_WebSocketClient(PRMP_WebsocketProtocol):
             self.handle()
 
         self.started = True
-    
-    def close(self, reason: str=''):
+
+    def close(self, reason: str = ""):
         self.send_close(reason=reason)
         self.shutdown()
+
+    def on_closed(self):
+        LOGGER.info(" Disconnected from Server")
+
+    def on_connected(self):
+        LOGGER.info(" Connected to Server")
